@@ -1,9 +1,10 @@
 """
 usage_limiter.py - a simple daily cap on how many agent queries the app will
-run, so a public link backed by one person's API key can't be run up
-unboundedly by strangers. Not bulletproof (a redeploy resets the counter,
-and it's per-container, not per-visitor) - it's a friendly speed bump, not
-a security system.
+run. Gemini's free tier has no cost risk, but it does share one daily request
+quota (per API key) across every visitor to this public app - without a cap,
+one enthusiastic visitor could exhaust the day's quota for everyone else.
+Not bulletproof (a redeploy resets the counter, and it's per-container, not
+per-visitor) - it's a friendly speed bump, not a security system.
 """
 
 import os
@@ -12,7 +13,7 @@ from datetime import date
 from pathlib import Path
 
 COUNTER_FILE = Path(__file__).parent / "data_cache" / "usage_counter.json"
-DEFAULT_DAILY_LIMIT = 40  # generous for a portfolio demo, cheap on Haiku 4.5
+DEFAULT_DAILY_LIMIT = 100  # each question uses ~2 API calls; Gemini free tier allows ~1500/day total
 
 
 def _load():

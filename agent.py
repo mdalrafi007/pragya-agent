@@ -1,55 +1,44 @@
-"""
-agent.py - the Pragya agentic loop.
-Claude decides which indicators to fetch and how to analyze them,
-then we run the tools locally and let Claude write the final bilingual summary.
-"""
-
 import os
-import json
-import anthropic
 import pandas as pd
+from google import genai
+from google.genai import types
 
 from wb_fetcher import fetch_worldbank_indicator, INDICATOR_MAP
-from analyzer import detect_trend, compute_correlation
-from chart_generator import generate_chart
 from report_writer import write_insight_report
+from chart_generator import generate_chart
 
-# Use the API key from the environment - never hardcode it in the file.
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY") or "not-configured")
 
-# Cheap + fast model, plenty capable for this planning task.
-MODEL = "claude-haiku-4-5"
+MODEL = "gemini-2.5-flash"
 
-TOOLS = [
-    {
-        "name": "fetch_indicator",
-        "description": "Fetch a Bangladesh economic time series from the World Bank.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "indicator": {
-                    "type": "string",
-                    "enum": list(INDICATOR_MAP.keys()),
-                },
-                "start_year": {"type": "integer"},
-                "end_year": {"type": "integer"},
-            },
-            "required": ["indicator"],
+FETCH_DECLARATION = types.FunctionDeclaration(
+    name="fetch_indicator",
+    description="Fetch a Bangladesh economic time series from the World Bank.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "indicator": {"type": "string", "enum": list(INDICATOR_MAP.keys())},
+            "start_year": {"type": "integer"},
+            "end_year": {"type": "integer"},
         },
+        "required": ["indicator"],
     },
-    {
-        "name": "write_summary",
-        "description": "Provide the final bilingual (English + Bangla) narrative summary of the analysis.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "summary_en": {"type": "string"},
-                "summary_bn": {"type": "string"},
-            },
-            "required": ["summary_en", "summary_bn"],
+)
+
+WRITE_SUMMARY_DECLARATION = types.FunctionDeclaration(
+    name="write_summary",
+    description="Provide the final bilingual (English + Bangla) narrative summary of the analysis.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "summary_en": {"type": "string"},
+            "summary_bn": {"type": "string"},
         },
+        "required": ["summary_en", "summary_bn"],
     },
-]
+)
+
+TOOLS = [types.Tool(function_declarations=[FETCH_DECLARATION, WRITE_SUMMARY_DECLARATION])]
 
 SYSTEM_PROMPT = (
     "You are Pragya, a bilingual (English/Bangla) socioeconomic analyst for Bangladesh. "
@@ -60,84 +49,73 @@ SYSTEM_PROMPT = (
     "Keep each summary to 2-4 sentences."
 )
 
+CONFIG = types.GenerateContentConfig(
+    system_instruction=SYSTEM_PROMPT,
+    tools=TOOLS,
+)
+
 
 def run_query(question: str, output_dir="outputs"):
-    """Runs the full agent loop for a single natural-language question. Returns the report path."""
-    messages = [{"role": "user", "content": question}]
-    fetched = {}  # indicator_key -> pandas Series
-    pending_summary = None  # (en, bn) offered before data existed - used only as last-resort fallback
-    fallback_text = None  # plain-text answer, used only if Claude never calls a tool at all
+    contents = [types.Content(role="user", parts=[types.Part.from_text(text=question)])]
+    fetched = {}
+    pending_summary = None
+    fallback_text = None
 
-    for _ in range(6):  # hard cap so a confused loop can't run forever
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-        )
+    for _ in range(6):
+        response = client.models.generate_content(model=MODEL, contents=contents, config=CONFIG)
 
-        messages.append({"role": "assistant", "content": response.content})
+        model_parts = response.parts or []
+        contents.append(types.Content(role="model", parts=model_parts))
 
-        tool_blocks = [b for b in response.content if b.type == "tool_use"]
-        text_blocks = [b for b in response.content if b.type == "text"]
-        if text_blocks:
-            fallback_text = " ".join(b.text for b in text_blocks)
+        if response.text:
+            fallback_text = response.text
 
-        if not tool_blocks:
-            break  # Claude answered in plain text only, or is done
+        calls = response.function_calls or []
+        if not calls:
+            break
 
         fetched_this_turn = False
         summary_en = summary_bn = None
-        tool_results = []
+        response_parts = []
 
-        for block in tool_blocks:
-            if block.name == "fetch_indicator":
+        for call in calls:
+            if call.name == "fetch_indicator":
                 fetched_this_turn = True
-                key = block.input["indicator"]
-                start = block.input.get("start_year", 2010)
-                end = block.input.get("end_year", 2024)
+                key = call.args["indicator"]
+                start = call.args.get("start_year", 2010)
+                end = call.args.get("end_year", 2024)
                 series = fetch_worldbank_indicator(key, start_year=start, end_year=end)
                 fetched[key] = series
                 preview = series.round(2).to_dict()
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(preview) if preview else "No data available for that range.",
-                })
+                response_parts.append(types.Part.from_function_response(
+                    name="fetch_indicator",
+                    response={"result": preview if preview else "No data available for that range."},
+                ))
 
-            elif block.name == "write_summary":
-                summary_en = block.input["summary_en"]
-                summary_bn = block.input["summary_bn"]
+            elif call.name == "write_summary":
+                summary_en = call.args["summary_en"]
+                summary_bn = call.args["summary_bn"]
 
-        # Guard: if Claude wrote a summary in the SAME turn it also requested new
-        # data, that summary was written blind - it can't have accounted for
-        # numbers it hadn't seen yet. Don't finalize on it; nudge Claude to
-        # look at the data first, but keep it as a last-resort fallback in case
-        # the loop runs out before Claude tries again.
         if summary_en and fetched_this_turn:
             pending_summary = (summary_en, summary_bn)
-            write_block = next(b for b in tool_blocks if b.name == "write_summary")
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": write_block.id,
-                "content": (
+            response_parts.append(types.Part.from_function_response(
+                name="write_summary",
+                response={"result": (
                     "Not recorded yet - you requested new data in this same turn, "
                     "so review the fetched values above first, then call write_summary "
                     "again (repeating it unchanged is fine if it still holds)."
-                ),
-            })
+                )},
+            ))
         elif summary_en:
-            messages.append({"role": "user", "content": tool_results + [{
-                "type": "tool_result",
-                "tool_use_id": next(b for b in tool_blocks if b.name == "write_summary").id,
-                "content": "Summary received.",
-            }]})
+            response_parts.append(types.Part.from_function_response(
+                name="write_summary",
+                response={"result": "Summary received."},
+            ))
+            contents.append(types.Content(role="user", parts=response_parts))
             return _finalize(question, summary_en, summary_bn, fetched, output_dir)
 
-        messages.append({"role": "user", "content": tool_results})
+        contents.append(types.Content(role="user", parts=response_parts))
 
-    # Loop exhausted without a clean finalize - use best available fallback.
     if pending_summary:
         return _finalize(question, pending_summary[0], pending_summary[1], fetched, output_dir)
     if fallback_text:

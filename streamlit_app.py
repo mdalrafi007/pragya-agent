@@ -38,21 +38,24 @@ if ask:
         allowed, remaining = check_and_increment()
         if not allowed:
             st.error(
-                "This demo has hit its free daily question limit — please check "
-                "back tomorrow. (This protects the project owner's API budget.)"
+                "This demo has hit its shared daily quota — please check back "
+                "tomorrow. (Gemini's free tier shares one quota across every "
+                "visitor to this app.)"
             )
         else:
             with st.spinner("Pragya is fetching data and thinking..."):
+                report_path = None
+                had_error = False
                 try:
                     report_path = run_query(question)
                 except Exception as e:
-                    report_path = None
+                    had_error = True
                     st.error(f"Something went wrong: {e}")
 
             if report_path:
                 with open(report_path, "r", encoding="utf-8") as f:
                     html = f.read()
                 components.html(html, height=800, scrolling=True)
-                st.caption(f"{remaining} questions left in today's free quota.")
-            elif report_path is None:
+                st.caption(f"{remaining} questions left in today's shared quota.")
+            elif not had_error:
                 st.info("The agent couldn't produce an answer for that question. Try rephrasing.")
