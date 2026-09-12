@@ -9,7 +9,7 @@ from chart_generator import generate_chart
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY") or "not-configured")
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.6-flash"
 
 FETCH_DECLARATION = types.FunctionDeclaration(
     name="fetch_indicator",
