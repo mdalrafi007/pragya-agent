@@ -2,17 +2,17 @@
 
 A bilingual (English/Bangla) AI agent that answers questions about Bangladesh's
 economy by pulling real World Bank data, analyzing it, and writing a narrative
-report — planned autonomously via Claude's tool-use.
+report — planned autonomously via Gemini's tool-use.
 
 Built entirely on a phone (Termux). No paid infrastructure required.
 
 ## How it works
 
 1. You ask a question in plain English.
-2. Claude (Haiku 4.5) decides which indicators to fetch — youth unemployment,
+2. GEMINI_API_KEY (flash 3.6) decides which indicators to fetch — youth unemployment,
    inflation, GDP growth — and calls `fetch_indicator` for each.
 3. Real data is pulled from the World Bank API and cached locally.
-4. Claude writes a 2-4 sentence bilingual summary grounded in the actual numbers.
+4. Gemini writes a 2-4 sentence bilingual summary grounded in the actual numbers.
 5. A chart + HTML report is generated and shown in the web app.
 
 ## Project structure
@@ -23,7 +23,7 @@ pragya_agent/
 ├── analyzer.py          # trend/correlation helpers
 ├── chart_generator.py   # EN/BN chart rendering
 ├── report_writer.py     # self-contained HTML report builder
-├── agent.py             # the Claude tool-use loop (core logic)
+├── agent.py             # the Gemini tool-use loop (core logic)
 ├── streamlit_app.py     # web interface (entry point for hosting)
 ├── requirements.txt
 └── outputs/             # generated reports + charts land here
@@ -39,7 +39,7 @@ targets.
 ```bash
 pkg install python
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY="your-key-here"
+export GEMINI_API_KEY="your-key-here"
 streamlit run streamlit_app.py
 ```
 
@@ -81,7 +81,7 @@ mistake, rotate it immediately in the Anthropic Console.
 3. Pick your `pragya-agent` repo, branch `main`, main file path `streamlit_app.py`
 4. Before clicking Deploy, open **Advanced settings → Secrets** and add:
    ```
-   ANTHROPIC_API_KEY = "your-actual-key-here"
+   GEMINI_API_KEY = "your-actual-key-here"
    ```
 5. Click **Deploy**. Build takes a couple of minutes.
 
