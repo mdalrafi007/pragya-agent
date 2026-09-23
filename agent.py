@@ -4,6 +4,8 @@ from google import genai
 from google.genai import types
 
 from wb_fetcher import fetch_worldbank_indicator, INDICATOR_MAP
+from validator import validate_series
+from analyzer import analyze_series
 from report_writer import write_insight_report
 from chart_generator import generate_chart
 
@@ -46,13 +48,41 @@ SYSTEM_PROMPT = (
     "gdp_growth, total_unemployment), call fetch_indicator for each one you need, then once you "
     "have the data described to you, call write_summary with a concise, specific, non-generic "
     "analysis in both English and Bangla. Reference actual years and directions of change. "
-    "Keep each summary to 2-4 sentences."
+    "Keep each summary to 2-4 sentences. "
+    "Each fetch_indicator result contains Python-computed statistics under 'analysis' and "
+    "data-quality notes under 'validation'. Use the computed figures exactly as given and never "
+    "calculate your own changes, averages, or percentages. absolute_change is in percentage points; "
+    "percentage_change is the relative change from the first value and must never be described as "
+    "percentage points. net_direction compares the first and last values while trend is the "
+    "best-fit line, so they can differ; explain a difference briefly if it matters. If "
+    "analysis.status is not 'ok', say the data is unavailable or insufficient instead of guessing. "
+    "Mention validation warnings that affect the interpretation, such as missing recent years."
 )
 
 CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM_PROMPT,
     tools=TOOLS,
 )
+
+
+def analyze_indicator(key, series, start, end):
+    """Python-only stage between fetching and interpretation.
+
+    Runs automatically after every fetch, so the model never decides whether
+    (or how) the basic statistics get calculated.
+    """
+    return {
+        "indicator": key,
+        "validation": validate_series(series, start, end),
+        "analysis": analyze_series(series, unit="%"),
+    }
+
+
+def build_tool_result(key, series, start, end):
+    """What Gemini receives after fetch_indicator: computed analysis plus the raw values."""
+    result = analyze_indicator(key, series, start, end)
+    result["values"] = {str(int(year)): round(float(value), 2) for year, value in series.items()}
+    return result
 
 
 def run_query(question: str, output_dir="outputs"):
@@ -82,14 +112,13 @@ def run_query(question: str, output_dir="outputs"):
             if call.name == "fetch_indicator":
                 fetched_this_turn = True
                 key = call.args["indicator"]
-                start = call.args.get("start_year", 2010)
-                end = call.args.get("end_year", 2024)
+                start = int(call.args.get("start_year", 2010))
+                end = int(call.args.get("end_year", 2024))
                 series = fetch_worldbank_indicator(key, start_year=start, end_year=end)
                 fetched[key] = series
-                preview = series.round(2).to_dict()
                 response_parts.append(types.Part.from_function_response(
                     name="fetch_indicator",
-                    response={"result": preview if preview else "No data available for that range."},
+                    response={"result": build_tool_result(key, series, start, end)},
                 ))
 
             elif call.name == "write_summary":
@@ -102,7 +131,7 @@ def run_query(question: str, output_dir="outputs"):
                 name="write_summary",
                 response={"result": (
                     "Not recorded yet - you requested new data in this same turn, "
-                    "so review the fetched values above first, then call write_summary "
+                    "so review the computed analysis above first, then call write_summary "
                     "again (repeating it unchanged is fine if it still holds)."
                 )},
             ))
